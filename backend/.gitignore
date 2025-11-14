@@ -5,6 +5,10 @@
 # TypeScript build output
 dist/
 
+# Docker data
+docker/dynamodb/
+docker/minio/
+
 # Node modules
 node_modules/
 
