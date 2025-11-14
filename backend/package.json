@@ -15,6 +15,7 @@
     "dynamodb:down": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml down",
     "dynamodb:logs": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml logs -f dynamodb-local",
     "dynamodb:create-table": "tsx scripts/create-table.ts",
+    "test:websocket": "tsx scripts/test-websocket.ts",
     "offline": "IS_OFFLINE=true serverless offline",
     "offline:start": "IS_OFFLINE=true serverless offline start",
     "offline:full": "npm run dynamodb:up && sleep 3 && npm run dynamodb:create-table && npm run offline"
@@ -37,10 +38,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
     "serverless": "^4.23.0",
     "serverless-offline": "^14.4.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "ws": "^8.18.0"
   }
 }
-
