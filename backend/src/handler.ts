@@ -10,6 +10,11 @@ import {
   PostToConnectionCommand,
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import {
+  S3Client,
+  PutObjectCommand,
+  PutObjectCommandInput,
+} from "@aws-sdk/client-s3";
+import {
   WebSocketEvent,
   WebSocketResponse,
   ConnectionItem,
@@ -34,6 +39,20 @@ const dynamodb = DynamoDBDocumentClient.from(dynamoClient);
 
 const CONNECTIONS_TABLE =
   process.env.CONNECTIONS_TABLE || "ws-streaming-upload-connections-dev";
+
+// S3クライアントの設定（ローカル環境の場合はMinIOを使用）
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || "ws-streaming-upload-dev";
+const s3Client = new S3Client({
+  region: isOffline ? "us-east-1" : "ap-northeast-1",
+  endpoint: isOffline ? "http://localhost:9000" : undefined,
+  forcePathStyle: isOffline, // MinIOでは必須
+  credentials: isOffline
+    ? {
+        accessKeyId: "minioadmin",
+        secretAccessKey: "minioadmin",
+      }
+    : undefined,
+});
 
 // ApiGatewayManagementApiのエンドポイントを動的に取得
 function getApiGatewayManagementApi(
@@ -156,6 +175,106 @@ export const defaultHandler = async (
   }
 };
 
+// S3にオブジェクトをアップロード
+async function uploadToS3(
+  connectionId: string,
+  data: string | Buffer,
+  contentType?: string,
+  fileName?: string
+): Promise<string> {
+  const timestamp = Date.now();
+  const objectKey = fileName
+    ? `${connectionId}/${timestamp}-${fileName}`
+    : `${connectionId}/${timestamp}-upload`;
+
+  const params: PutObjectCommandInput = {
+    Bucket: S3_BUCKET_NAME,
+    Key: objectKey,
+    Body: typeof data === "string" ? Buffer.from(data, "base64") : data,
+    ContentType: contentType || "application/octet-stream",
+  };
+
+  try {
+    await s3Client.send(new PutObjectCommand(params));
+    console.log(`✅ Uploaded to S3: ${objectKey}`);
+    return objectKey;
+  } catch (error) {
+    console.error("❌ Error uploading to S3:", error);
+    throw error;
+  }
+}
+
+// ファイルアップロード処理
+export const upload = async (
+  event: WebSocketEvent
+): Promise<WebSocketResponse> => {
+  const connectionId = event.requestContext.connectionId;
+  const body: MessageBody = JSON.parse(event.body || "{}");
+
+  console.log(`Upload request from ${connectionId}:`, {
+    fileName: body.fileName,
+    contentType: body.contentType,
+    dataLength: body.data?.length,
+  });
+
+  try {
+    const apigwManagementApi = getApiGatewayManagementApi(event);
+
+    if (!body.data) {
+      await sendMessageToConnection(apigwManagementApi, connectionId, {
+        type: "upload-error",
+        message: "No data provided",
+        error: "Data field is required",
+      });
+      return {
+        statusCode: 400,
+      };
+    }
+
+    try {
+      const { data, fileName, contentType } = body;
+      const objectKey = await uploadToS3(
+        connectionId,
+        data,
+        contentType,
+        fileName
+      );
+
+      // アップロード成功をクライアントに通知
+      await sendMessageToConnection(apigwManagementApi, connectionId, {
+        type: "upload-success",
+        message: "File uploaded successfully",
+        data: {
+          objectKey,
+          bucket: S3_BUCKET_NAME,
+        },
+      });
+
+      return {
+        statusCode: 200,
+      };
+    } catch (uploadError) {
+      console.error("Error uploading file:", uploadError);
+      await sendMessageToConnection(apigwManagementApi, connectionId, {
+        type: "upload-error",
+        message: "Failed to upload file",
+        error:
+          uploadError instanceof Error
+            ? uploadError.message
+            : String(uploadError),
+      });
+      return {
+        statusCode: 500,
+      };
+    }
+  } catch (error) {
+    console.error("Error in upload handler:", error);
+    return {
+      statusCode: 500,
+    };
+  }
+};
+
 // カスタムメッセージ送信処理
 export const sendMessage = async (
   event: WebSocketEvent
@@ -167,7 +286,7 @@ export const sendMessage = async (
 
   try {
     const apigwManagementApi = getApiGatewayManagementApi(event);
-    // メッセージを送信者にエコー
+    // 通常のメッセージを送信者にエコー
     await sendMessageToConnection(apigwManagementApi, connectionId, {
       type: "message",
       message: "Message received",
