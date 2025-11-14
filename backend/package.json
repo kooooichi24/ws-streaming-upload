@@ -23,7 +23,7 @@
     "test:websocket": "tsx scripts/test-websocket.ts",
     "offline": "IS_OFFLINE=true serverless offline",
     "offline:start": "IS_OFFLINE=true serverless offline start",
-    "offline:full": "npm run dynamodb:up && sleep 3 && npm run dynamodb:create-table && npm run offline"
+    "offline:full": "npm run dynamodb:up && npm run minio:up && sleep 5 && npm run dynamodb:create-table && npm run minio:setup && npm run offline"
   },
   "keywords": [
     "websocket",
