@@ -27,6 +27,9 @@ export interface ConnectionItem {
 
 export interface MessageBody {
   action?: string;
+  data?: string; // Base64エンコードされたファイルデータ
+  fileName?: string;
+  contentType?: string;
   [key: string]: any;
 }
 
@@ -34,4 +37,5 @@ export interface WebSocketMessage {
   type: string;
   message?: string;
   data?: any;
+  error?: string;
 }
