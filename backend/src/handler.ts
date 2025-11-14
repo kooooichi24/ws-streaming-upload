@@ -39,9 +39,16 @@ const CONNECTIONS_TABLE =
 function getApiGatewayManagementApi(
   event: WebSocketEvent
 ): ApiGatewayManagementApiClient {
-  const domain = event.requestContext.domainName;
-  const stage = event.requestContext.stage;
-  const endpoint = `https://${domain}/${stage}`;
+  let endpoint: string;
+
+  if (isOffline) {
+    endpoint = "http://localhost:3001";
+  } else {
+    // 本番環境: 通常のAPI Gatewayエンドポイント
+    const domain = event.requestContext.domainName;
+    const stage = event.requestContext.stage;
+    endpoint = `https://${domain}/${stage}`;
+  }
 
   // ローカル環境では認証情報を設定（serverless-offlineは認証を無視しますが、AWS SDK v3では必要）
   return new ApiGatewayManagementApiClient({
@@ -195,6 +202,17 @@ async function sendMessageToConnection(
       })
     );
   } catch (error: any) {
+    // ローカル環境では404エラーを無視（serverless-offlineの制限）
+    if (
+      isOffline &&
+      (error.statusCode === 404 || error.$metadata?.httpStatusCode === 404)
+    ) {
+      console.warn(
+        `⚠️  Local environment: ApiGatewayManagementApi not fully supported by serverless-offline. ` +
+          `Message would be sent to connection ${connectionId} in production.`
+      );
+      return;
+    }
     if (error.statusCode === 410 || error.$metadata?.httpStatusCode === 410) {
       // 接続が既に切断されている場合、DynamoDBから削除
       console.log(`Connection ${connectionId} is gone, removing from table`);
