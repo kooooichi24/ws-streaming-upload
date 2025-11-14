@@ -43,11 +43,11 @@ ws.on("close", (code: number, reason: Buffer) => {
   process.exit(0);
 });
 
-// 10秒後に接続を閉じる
+// 100秒後に接続を閉じる
 setTimeout(() => {
   console.log("\n⏰ Closing connection after 10 seconds...");
   ws.close();
-}, 10000);
+}, 100000);
 
 // Ctrl+Cで終了
 process.on("SIGINT", () => {
