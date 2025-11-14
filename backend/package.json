@@ -13,10 +13,13 @@
     "invoke": "serverless invoke -f",
     "dynamodb:up": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml up -d dynamodb-local",
     "dynamodb:admin": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml up -d dynamodb-admin",
+    "minio:up": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml up -d minio",
+    "minio:logs": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml logs -f minio",
     "dynamodb:down": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml down",
     "dynamodb:logs": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml logs -f dynamodb-local",
     "dynamodb:admin:logs": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml logs -f dynamodb-admin",
     "dynamodb:create-table": "tsx scripts/create-table.ts",
+    "minio:setup": "tsx scripts/setup-minio.ts",
     "test:websocket": "tsx scripts/test-websocket.ts",
     "offline": "IS_OFFLINE=true serverless offline",
     "offline:start": "IS_OFFLINE=true serverless offline start",
@@ -36,6 +39,7 @@
   "dependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "^3.700.0",
     "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/client-s3": "^3.700.0",
     "@aws-sdk/lib-dynamodb": "^3.700.0"
   },
   "devDependencies": {
