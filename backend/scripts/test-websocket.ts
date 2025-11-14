@@ -21,6 +21,23 @@ ws.on("open", () => {
     };
     ws.send(JSON.stringify(message));
   }, 1000);
+
+  // ファイルアップロードのテスト
+  setTimeout(() => {
+    console.log("\n📤 Sending file upload request...");
+    // テスト用のテキストデータをBase64エンコード
+    const testContent =
+      "This is a test file content for WebSocket streaming upload.";
+    const base64Data = Buffer.from(testContent).toString("base64");
+
+    const uploadMessage = {
+      action: "upload",
+      data: base64Data,
+      fileName: "test-file.txt",
+      contentType: "text/plain",
+    };
+    ws.send(JSON.stringify(uploadMessage));
+  }, 3000);
 });
 
 ws.on("message", (data: WebSocket.Data) => {
