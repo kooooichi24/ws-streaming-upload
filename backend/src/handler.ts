@@ -185,7 +185,7 @@ async function uploadToS3(
   const timestamp = Date.now();
   const objectKey = fileName
     ? `${connectionId}/${timestamp}-${fileName}`
-    : `${connectionId}/${timestamp}-upload`;
+    : `${connectionId}/${timestamp}`;
 
   const params: PutObjectCommandInput = {
     Bucket: S3_BUCKET_NAME,
