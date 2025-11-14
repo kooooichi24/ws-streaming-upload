@@ -1,11 +1,16 @@
 import { DynamoDBClient, CreateTableCommand } from "@aws-sdk/client-dynamodb";
 import type { CreateTableCommandInput } from "@aws-sdk/client-dynamodb";
 
-// DynamoDB Localは認証情報を必要としません
+// DynamoDB Localは認証情報を無視しますが、AWS SDK v3では認証情報プロバイダーが必要です
+// -sharedDbオプションを使用している場合、任意の認証情報で動作します
+// handler.tsと同じ認証情報を使用します
 const dynamoClient = new DynamoDBClient({
   region: "localhost",
   endpoint: "http://localhost:8000",
-  // credentialsは不要（DynamoDB Localは認証を無視します）
+  credentials: {
+    accessKeyId: "dummy",
+    secretAccessKey: "dummy",
+  },
 });
 
 const tableName =
