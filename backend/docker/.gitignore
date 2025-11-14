@@ -1,4 +1,7 @@
 # DynamoDB Local data directory
 dynamodb/
 
+# MinIO data directory
+minio/
+
 
