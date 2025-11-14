@@ -11,8 +11,13 @@
     "remove": "serverless remove",
     "logs": "serverless logs -f",
     "invoke": "serverless invoke -f",
-    "offline": "serverless offline",
-    "offline:start": "serverless offline start"
+    "dynamodb:up": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml up -d dynamodb-local",
+    "dynamodb:down": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml down",
+    "dynamodb:logs": "docker-compose -p ws-streaming-upload -f docker/docker-compose.yml logs -f dynamodb-local",
+    "dynamodb:create-table": "tsx scripts/create-table.ts",
+    "offline": "IS_OFFLINE=true serverless offline",
+    "offline:start": "IS_OFFLINE=true serverless offline start",
+    "offline:full": "npm run dynamodb:up && sleep 3 && npm run dynamodb:create-table && npm run offline"
   },
   "keywords": [
     "websocket",
@@ -34,6 +39,7 @@
     "@types/node": "^24.10.1",
     "serverless": "^4.23.0",
     "serverless-offline": "^14.4.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }
 }

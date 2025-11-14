@@ -17,7 +17,19 @@ import {
   WebSocketMessage,
 } from "./types/websocket";
 
-const dynamoClient = new DynamoDBClient({});
+// DynamoDBクライアントの設定（ローカル環境の場合はDynamoDB Local Dockerを使用）
+const isOffline =
+  process.env.IS_OFFLINE === "true" || process.env.IS_OFFLINE === "1";
+const dynamoClient = new DynamoDBClient({
+  region: isOffline ? "localhost" : "ap-northeast-1",
+  endpoint: isOffline ? "http://localhost:8000" : undefined,
+  credentials: isOffline
+    ? {
+        accessKeyId: "DEFAULT_ACCESS_KEY",
+        secretAccessKey: "DEFAULT_SECRET",
+      }
+    : undefined,
+});
 const dynamodb = DynamoDBDocumentClient.from(dynamoClient);
 
 const CONNECTIONS_TABLE =

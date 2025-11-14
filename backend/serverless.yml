@@ -13,6 +13,7 @@ provider:
     STAGE: ${self:provider.stage}
     SERVICE: ${self:service}
     CONNECTIONS_TABLE: ${self:service}-connections-${self:provider.stage}
+    IS_OFFLINE: ${env:IS_OFFLINE, 'false'}
 
 plugins:
   - serverless-offline
