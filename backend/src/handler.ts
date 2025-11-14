@@ -25,8 +25,8 @@ const dynamoClient = new DynamoDBClient({
   endpoint: isOffline ? "http://localhost:8000" : undefined,
   credentials: isOffline
     ? {
-        accessKeyId: "DEFAULT_ACCESS_KEY",
-        secretAccessKey: "DEFAULT_SECRET",
+        accessKeyId: "dummy",
+        secretAccessKey: "dummy",
       }
     : undefined,
 });
@@ -43,8 +43,16 @@ function getApiGatewayManagementApi(
   const stage = event.requestContext.stage;
   const endpoint = `https://${domain}/${stage}`;
 
+  // ローカル環境では認証情報を設定（serverless-offlineは認証を無視しますが、AWS SDK v3では必要）
   return new ApiGatewayManagementApiClient({
     endpoint: endpoint,
+    region: isOffline ? "localhost" : "ap-northeast-1",
+    credentials: isOffline
+      ? {
+          accessKeyId: "dummy",
+          secretAccessKey: "dummy",
+        }
+      : undefined,
   });
 }
 
