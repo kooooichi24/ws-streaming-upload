@@ -15,6 +15,24 @@ provider:
     CONNECTIONS_TABLE: ${self:service}-connections-${self:provider.stage}
     S3_BUCKET_NAME: ${self:service}-${self:provider.stage}
     IS_OFFLINE: ${env:IS_OFFLINE, 'false'}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource:
+            - arn:aws:s3:::${self:service}-${self:provider.stage}/*
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:DeleteItem
+            - dynamodb:Scan
+            - dynamodb:GetItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/${self:service}-connections-${self:provider.stage}
 
 plugins:
   - serverless-offline
@@ -76,26 +94,44 @@ resources:
         TimeToLiveSpecification:
           Enabled: true
           AttributeName: ttl
+    # S3 bucket for file storage
+    S3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-${self:provider.stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        VersioningConfiguration:
+          Status: Enabled
 
-  Outputs:
-    WebSocketApiId:
-      Value:
-        Ref: WebSocketApi
-      Export:
-        Name: ${self:service}-${self:provider.stage}-websocket-api-id
+  # Outputs:
+  #   WebSocketApiId:
+  #     Value:
+  #       Ref: ApiGatewayWebsocketApi
+  #     Export:
+  #       Name: ${self:service}-${self:provider.stage}-websocket-api-id
 
-    WebSocketApiEndpoint:
-      Value:
-        Fn::Join:
-          - ''
-          - - 'wss://'
-            - Fn::GetAtt:
-                - WebSocketApi
-                - ApiId
-            - '.execute-api.'
-            - ${self:provider.region}
-            - '.amazonaws.com/'
-            - ${self:provider.stage}
-      Export:
-        Name: ${self:service}-${self:provider.stage}-websocket-api-endpoint
+  #   WebSocketApiEndpoint:
+  #     Value:
+  #       Fn::Join:
+  #         - ''
+  #         - - 'wss://'
+  #           - Fn::GetAtt:
+  #               - ApiGatewayWebsocketApi
+  #               - ApiId
+  #           - '.execute-api.'
+  #           - ${self:provider.region}
+  #           - '.amazonaws.com/'
+  #           - ${self:provider.stage}
+  #     Export:
+  #       Name: ${self:service}-${self:provider.stage}-websocket-api-endpoint
+
+  #   S3BucketName:
+  #     Value:
+  #       Ref: S3Bucket
+  #     Export:
+  #       Name: ${self:service}-${self:provider.stage}-s3-bucket-name
 
