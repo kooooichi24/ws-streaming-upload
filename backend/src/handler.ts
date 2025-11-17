@@ -103,7 +103,7 @@ export const connect = async (
 
   try {
     await dynamodb.send(new PutCommand(params));
-    console.log(`Connection established: ${connectionId}`);
+    console.log(`Connection established: ${connectionId}`, params);
 
     return {
       statusCode: 200,
