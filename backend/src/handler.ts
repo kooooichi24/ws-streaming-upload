@@ -227,29 +227,24 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       };
 
       let outputExt = contentTypeToExtension[contentType] || "mp3";
+
+      // すべてのチャンクをメモリ上で結合（最初のチャンクのWebMヘッダーが有効）
+      const combinedInput = Buffer.concat(chunks);
+      const inputFile = path.join(tmpDir, `input.${outputExt}`);
+      fs.writeFileSync(inputFile, combinedInput);
+      console.log(
+        `Combined ${chunks.length} chunks into input file: ${combinedInput.length} bytes`
+      );
+
       const outputFile = path.join(tmpDir, `combined.mp3`);
-
-      // チャンクをメモリから直接一時ファイルに書き込む（ffmpeg用）
-      const chunkFiles: string[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkFile = path.join(tmpDir, `chunk-${i}.${outputExt}`);
-        fs.writeFileSync(chunkFile, chunks[i]);
-        chunkFiles.push(chunkFile);
-      }
-
 
       // ffmpegのパスを取得（Layerから）
       const ffmpegPath = isOffline
         ? "ffmpeg" // ローカル環境ではシステムのffmpegを使用
         : "/opt/bin/ffmpeg"; // Lambda Layerから
 
-      // ffmpegで結合（concat filterを使用）
-      // 複数の入力ファイルを指定し、concat filterで結合
-      const inputFiles = chunkFiles.map((file) => `-i "${file}"`).join(" ");
-      // concat filterの構文: [0:a][1:a][2:a]...concat=n=入力数:v=0:a=1[out]
-      const inputStreams = chunkFiles.map((_, i) => `[${i}:a]`).join("");
-      const filterComplex = `${inputStreams}concat=n=${chunkFiles.length}:v=0:a=1[out]`;
-      const ffmpegCommand = `${ffmpegPath} ${inputFiles} -filter_complex "${filterComplex}" -map "[out]" -c:a libmp3lame -b:a 192k -f mp3  "${outputFile}" -y`;
+      // ffmpegでMP3に変換（1つの入力ファイルのみ）
+      const ffmpegCommand = `${ffmpegPath} -i "${inputFile}" -c:a libmp3lame -b:a 192k "${outputFile}" -y`;
       console.log(`Executing ffmpeg: ${ffmpegCommand}`);
 
       let ffmpegSuccess = false;
@@ -292,31 +287,17 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
         combinedAudio = Buffer.concat(chunks);
       }
 
-      // ContentTypeを決定
-      let finalContentType = contentType;
-      const extensionToContentType: Record<string, string> = {
-        mp3: "audio/mpeg",
-        wav: "audio/wav",
-        ogg: "audio/ogg",
-        flac: "audio/flac",
-        m4a: "audio/mp4",
-        aac: "audio/aac",
-        webm: "audio/webm",
-      };
-      finalContentType = extensionToContentType[outputExt] || finalContentType;
-
-      const fileName = `combined.${outputExt}`;
       console.log(
-        `Combined ${validResults.length} chunks into ${combinedAudio.length} bytes (ContentType: ${finalContentType})`
+        `Combined ${validResults.length} chunks into ${combinedAudio.length} bytes (ContentType: audio/mpeg)`
       );
 
       // 結合した音声データをS3に保存
-      const finalObjectKey = `${connectionId}/combined-${Date.now()}-${fileName}`;
+      const finalObjectKey = `${connectionId}/combined-${Date.now()}-${outputFile}`;
       const putCommand = new PutObjectCommand({
         Bucket: S3_BUCKET_NAME,
         Key: finalObjectKey,
         Body: combinedAudio,
-        ContentType: finalContentType,
+        ContentType: "audio/mpeg",
       });
 
       await s3Client.send(putCommand);
@@ -454,21 +435,7 @@ async function uploadToS3(
   contentType: string
 ): Promise<string> {
   const timestamp = Date.now();
-  const contentTypeToExtension: Record<string, string> = {
-    "audio/mpeg": "mp3",
-    "audio/mp3": "mp3",
-    "audio/wav": "wav",
-    "audio/x-wav": "wav",
-    "audio/wave": "wav",
-    "audio/ogg": "ogg",
-    "audio/flac": "flac",
-    "audio/mp4": "m4a",
-    "audio/x-m4a": "m4a",
-    "audio/aac": "aac",
-    "audio/webm": "webm",
-  };
-  const extension = contentTypeToExtension[contentType] || "mp3";
-  const objectKey = `${connectionId}/${timestamp}.${extension}`;
+  const objectKey = `${connectionId}/${timestamp}.tmp`;
 
   const params: PutObjectCommandInput = {
     Bucket: S3_BUCKET_NAME,
