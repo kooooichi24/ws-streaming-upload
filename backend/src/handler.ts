@@ -479,16 +479,30 @@ export const defaultHandler = async (
 async function uploadToS3(
   connectionId: string,
   data: string | Buffer,
-  contentType?: string
+  contentType: string
 ): Promise<string> {
   const timestamp = Date.now();
-  const objectKey = `${connectionId}/${timestamp}`;
+  const contentTypeToExtension: Record<string, string> = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/ogg": "ogg",
+    "audio/flac": "flac",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/webm": "webm",
+  };
+  const extension = contentTypeToExtension[contentType] || "mp3";
+  const objectKey = `${connectionId}/${timestamp}.${extension}`;
 
   const params: PutObjectCommandInput = {
     Bucket: S3_BUCKET_NAME,
     Key: objectKey,
     Body: typeof data === "string" ? Buffer.from(data, "base64") : data,
-    ContentType: contentType || "application/octet-stream",
+    ContentType: contentType,
   };
 
   try {
@@ -522,6 +536,17 @@ export const upload = async (
         type: "upload-error",
         message: "No data provided",
         error: "Data field is required",
+      });
+      return {
+        statusCode: 400,
+      };
+    }
+
+    if (!body.contentType) {
+      await sendMessageToConnection(apigwManagementApi, connectionId, {
+        type: "upload-error",
+        message: "No contentType provided",
+        error: "ContentType field is required",
       });
       return {
         statusCode: 400,
