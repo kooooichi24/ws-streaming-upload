@@ -198,18 +198,6 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
     // インデックス順にソート
     validResults.sort((a, b) => a.index - b.index);
 
-    // チャンクの合計サイズを計算
-    const totalChunkSize = validResults.reduce(
-      (sum, r) => sum + r.chunk.length,
-      0
-    );
-    console.log(
-      `Total chunk size: ${totalChunkSize} bytes (${validResults.length} chunks)`
-    );
-    validResults.forEach((r, i) => {
-      console.log(`Chunk ${i}: ${r.chunk.length} bytes`);
-    });
-
     // メモリ上でチャンクを保持
     const chunks = validResults.map((r) => r.chunk);
 
@@ -297,27 +285,14 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
         combinedAudio = fs.readFileSync(outputFile);
         const outputFileSize = fs.statSync(outputFile).size;
         console.log(
-          `✅ FFmpeg combined successfully: ${outputFileSize} bytes (original: ${totalChunkSize} bytes)`
+          `✅ FFmpeg combined successfully: ${outputFileSize} bytes`
         );
-        if (outputFileSize !== totalChunkSize) {
-          console.warn(
-            `⚠️  File size mismatch: expected ${totalChunkSize} bytes, got ${outputFileSize} bytes`
-          );
-        }
       } else {
         // フォールバック: メモリ上のチャンクを直接結合
         console.warn(
           "⚠️  FFmpeg failed or output file not found, using simple concatenation from memory"
         );
         combinedAudio = Buffer.concat(chunks);
-        console.log(
-          `Simple concatenation result: ${combinedAudio.length} bytes (expected: ${totalChunkSize} bytes)`
-        );
-        if (combinedAudio.length !== totalChunkSize) {
-          console.error(
-            `❌ Size mismatch in simple concatenation: expected ${totalChunkSize} bytes, got ${combinedAudio.length} bytes`
-          );
-        }
       }
 
       // ContentTypeを決定
