@@ -51,6 +51,15 @@ build:
     platform: 'node'
     format: 'cjs'
 
+layers:
+  ffmpeg:
+    path: layers/ffmpeg
+    name: ${self:service}-ffmpeg-${self:provider.stage}
+    description: FFmpeg binary for audio/video processing
+    compatibleRuntimes:
+      - nodejs22.x
+    retain: false
+
 functions:
   connect:
     handler: src/handler.connect
@@ -60,6 +69,10 @@ functions:
 
   disconnect:
     handler: src/handler.disconnect
+    layers:
+      - { Ref: FfmpegLambdaLayer }
+    timeout: 900
+    memorySize: 1024
     events:
       - websocket:
           route: $disconnect
