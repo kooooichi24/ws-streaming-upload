@@ -201,7 +201,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
     // メモリ上でチャンクを保持
     const chunks = validResults.map((r) => r.chunk);
 
-    // 最小限の一時ディレクトリを作成（concat.txtのみ）
+    // 最小限の一時ディレクトリを作成
     const tmpDir = path.join(
       os.tmpdir(),
       `audio-${connectionId}-${Date.now()}`
@@ -209,21 +209,6 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
     fs.mkdirSync(tmpDir, { recursive: true });
 
     try {
-      // チャンクをメモリから直接一時ファイルに書き込む（ffmpeg用）
-      const chunkFiles: string[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkFile = path.join(tmpDir, `chunk-${i}.tmp`);
-        fs.writeFileSync(chunkFile, chunks[i]);
-        chunkFiles.push(chunkFile);
-      }
-
-      // concatファイルリストを作成
-      const concatListFile = path.join(tmpDir, "concat.webb");
-      const concatListContent = chunkFiles
-        .map((file) => `file '${file}'`)
-        .join("\n");
-      fs.writeFileSync(concatListFile, concatListContent);
-
       // ContentTypeから拡張子を取得
       const contentType =
         validResults[0]?.contentType || "application/octet-stream";
@@ -244,13 +229,27 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       let outputExt = contentTypeToExtension[contentType] || "mp3";
       const outputFile = path.join(tmpDir, `combined.${outputExt}`);
 
+      // チャンクをメモリから直接一時ファイルに書き込む（ffmpeg用）
+      const chunkFiles: string[] = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkFile = path.join(tmpDir, `chunk-${i}.${outputExt}`);
+        fs.writeFileSync(chunkFile, chunks[i]);
+        chunkFiles.push(chunkFile);
+      }
+
+
       // ffmpegのパスを取得（Layerから）
       const ffmpegPath = isOffline
         ? "ffmpeg" // ローカル環境ではシステムのffmpegを使用
         : "/opt/bin/ffmpeg"; // Lambda Layerから
 
-      // ffmpegで結合（concat demuxerを使用）
-      const ffmpegCommand = `${ffmpegPath} -f concat -safe 0 -i "${concatListFile}" -c copy "${outputFile}" -y`;
+      // ffmpegで結合（concat filterを使用）
+      // 複数の入力ファイルを指定し、concat filterで結合
+      const inputFiles = chunkFiles.map((file) => `-i "${file}"`).join(" ");
+      // concat filterの構文: [0:a][1:a][2:a]...concat=n=入力数:v=0:a=1[out]
+      const inputStreams = chunkFiles.map((_, i) => `[${i}:a]`).join("");
+      const filterComplex = `${inputStreams}concat=n=${chunkFiles.length}:v=0:a=1[out]`;
+      const ffmpegCommand = `${ffmpegPath} ${inputFiles} -filter_complex "${filterComplex}" -map "[out]" "${outputFile}" -y`;
       console.log(`Executing ffmpeg: ${ffmpegCommand}`);
 
       let ffmpegSuccess = false;
@@ -284,9 +283,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       if (ffmpegSuccess && fs.existsSync(outputFile)) {
         combinedAudio = fs.readFileSync(outputFile);
         const outputFileSize = fs.statSync(outputFile).size;
-        console.log(
-          `✅ FFmpeg combined successfully: ${outputFileSize} bytes`
-        );
+        console.log(`✅ FFmpeg combined successfully: ${outputFileSize} bytes`);
       } else {
         // フォールバック: メモリ上のチャンクを直接結合
         console.warn(
