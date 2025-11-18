@@ -227,7 +227,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       };
 
       let outputExt = contentTypeToExtension[contentType] || "mp3";
-      const outputFile = path.join(tmpDir, `combined.${outputExt}`);
+      const outputFile = path.join(tmpDir, `combined.mp3`);
 
       // チャンクをメモリから直接一時ファイルに書き込む（ffmpeg用）
       const chunkFiles: string[] = [];
@@ -249,7 +249,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       // concat filterの構文: [0:a][1:a][2:a]...concat=n=入力数:v=0:a=1[out]
       const inputStreams = chunkFiles.map((_, i) => `[${i}:a]`).join("");
       const filterComplex = `${inputStreams}concat=n=${chunkFiles.length}:v=0:a=1[out]`;
-      const ffmpegCommand = `${ffmpegPath} ${inputFiles} -filter_complex "${filterComplex}" -map "[out]" "${outputFile}" -y`;
+      const ffmpegCommand = `${ffmpegPath} ${inputFiles} -filter_complex "${filterComplex}" -map "[out]" -c:a libmp3lame -b:a 192k -f mp3  "${outputFile}" -y`;
       console.log(`Executing ffmpeg: ${ffmpegCommand}`);
 
       let ffmpegSuccess = false;
