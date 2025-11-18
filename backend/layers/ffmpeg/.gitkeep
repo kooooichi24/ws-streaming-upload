@@ -1,0 +1,4 @@
+# This directory should contain the ffmpeg binary
+# Place ffmpeg executable in bin/ directory
+# Structure: layers/ffmpeg/bin/ffmpeg
+
