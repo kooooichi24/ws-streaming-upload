@@ -28,7 +28,6 @@ export interface ConnectionItem {
 export interface MessageBody {
   action?: string;
   data?: string; // Base64エンコードされたファイルデータ
-  fileName?: string;
   contentType?: string;
   [key: string]: any;
 }

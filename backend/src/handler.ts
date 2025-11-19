@@ -493,7 +493,7 @@ export const upload = async (
     }
 
     try {
-      const { data, fileName, contentType } = body;
+      const { data, contentType } = body;
       const objectKey = await uploadToS3(connectionId, data, contentType);
 
       // アップロード成功をクライアントに通知
