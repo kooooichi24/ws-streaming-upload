@@ -222,6 +222,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
         "audio/flac": "flac",
         "audio/mp4": "m4a",
         "audio/x-m4a": "m4a",
+        "audio/m4a": "m4a",
         "audio/aac": "aac",
         "audio/webm": "webm",
       };
@@ -234,6 +235,107 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
       fs.writeFileSync(inputFile, combinedInput);
       console.log(
         `Combined ${chunks.length} chunks into input file: ${combinedInput.length} bytes`
+      );
+
+      // moov atomの存在を確認（モバイル側と同じ方法で検索）
+      // MP4ファイルでは、moov atomは4バイトのatom typeとして存在する
+      let moovAtomIndex = -1;
+      for (let i = 0; i <= combinedInput.length - 4; i++) {
+        if (
+          combinedInput[i] === 0x6d && // 'm'
+          combinedInput[i + 1] === 0x6f && // 'o'
+          combinedInput[i + 2] === 0x6f && // 'o'
+          combinedInput[i + 3] === 0x76 // 'v'
+        ) {
+          moovAtomIndex = i;
+          break;
+        }
+      }
+      const hasMoovAtom = moovAtomIndex !== -1;
+      console.log(`Combined file size: ${combinedInput.length} bytes`);
+      console.log(
+        `moov atom found: ${hasMoovAtom}, position: ${
+          moovAtomIndex !== -1 ? moovAtomIndex : "not found"
+        }`
+      );
+
+      // 各チャンクにmoov atomが含まれているか確認（デバッグ用）
+      chunks.forEach((chunk, index) => {
+        let chunkMoovIndex = -1;
+        for (let i = 0; i <= chunk.length - 4; i++) {
+          if (
+            chunk[i] === 0x6d && // 'm'
+            chunk[i + 1] === 0x6f && // 'o'
+            chunk[i + 2] === 0x6f && // 'o'
+            chunk[i + 3] === 0x76 // 'v'
+          ) {
+            chunkMoovIndex = i;
+            break;
+          }
+        }
+        if (chunkMoovIndex !== -1) {
+          console.log(
+            `Chunk ${index} (${chunk.length} bytes) contains moov atom at position ${chunkMoovIndex}`
+          );
+        }
+      });
+
+      // 最後のチャンクにmoov atomが含まれているか確認
+      if (chunks.length > 0) {
+        const lastChunk = chunks[chunks.length - 1];
+        let lastChunkMoovIndex = -1;
+        for (let i = 0; i <= lastChunk.length - 4; i++) {
+          if (
+            lastChunk[i] === 0x6d && // 'm'
+            lastChunk[i + 1] === 0x6f && // 'o'
+            lastChunk[i + 2] === 0x6f && // 'o'
+            lastChunk[i + 3] === 0x76 // 'v'
+          ) {
+            lastChunkMoovIndex = i;
+            break;
+          }
+        }
+        console.log(
+          `Last chunk size: ${
+            lastChunk.length
+          } bytes, moov atom in last chunk: ${
+            lastChunkMoovIndex !== -1
+          }, position: ${
+            lastChunkMoovIndex !== -1 ? lastChunkMoovIndex : "not found"
+          }`
+        );
+      }
+
+      // ファイルの最初の部分を確認（ftyp atomがあるか）
+      let ftypAtomIndex = -1;
+      for (let i = 0; i <= combinedInput.length - 4; i++) {
+        if (
+          combinedInput[i] === 0x66 && // 'f'
+          combinedInput[i + 1] === 0x74 && // 't'
+          combinedInput[i + 2] === 0x79 && // 'y'
+          combinedInput[i + 3] === 0x70 // 'p'
+        ) {
+          ftypAtomIndex = i;
+          break;
+        }
+      }
+      console.log(
+        `ftyp atom found: ${ftypAtomIndex !== -1}, position: ${
+          ftypAtomIndex !== -1 ? ftypAtomIndex : "not found"
+        }`
+      );
+
+      // デバッグ用: 結合されたファイルをS3に保存
+      const debugInputObjectKey = `${connectionId}/debug-input-${Date.now()}.${outputExt}`;
+      const debugInputPutCommand = new PutObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: debugInputObjectKey,
+        Body: combinedInput,
+        ContentType: contentType,
+      });
+      await s3Client.send(debugInputPutCommand);
+      console.log(
+        `🔍 Debug: Combined input file saved to S3: ${debugInputObjectKey} (${combinedInput.length} bytes, moov atom: ${hasMoovAtom})`
       );
 
       const outputFile = path.join(tmpDir, `combined.mp3`);
