@@ -211,7 +211,7 @@ export default function Index() {
       const message: WebSocketMessage = {
         action: "upload",
         data: base64Data,
-        contentType: Platform.OS === "ios" ? "audio/mp4" : "audio/mp4",
+        contentType: "audio/mp4",
         fileName: `recording-${Date.now()}-chunk.m4a`,
       };
 
