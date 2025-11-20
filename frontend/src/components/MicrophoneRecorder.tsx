@@ -9,27 +9,115 @@ interface PCMData {
 interface MicrophoneRecorderProps {
   onPCMData?: (pcmData: PCMData) => void
   bufferSize?: number
+  websocketUrl?: string
+}
+
+// Float32Arrayをbase64にエンコード
+function float32ArrayToBase64(float32Array: Float32Array): string {
+  // Float32ArrayをInt16Arrayに変換（16bit PCM）
+  const int16Array = new Int16Array(float32Array.length)
+  for (let i = 0; i < float32Array.length; i++) {
+    // -1.0 ～ 1.0 の範囲を -32768 ～ 32767 に変換
+    const sample = Math.max(-1, Math.min(1, float32Array[i]))
+    int16Array[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+  }
+  
+  // Int16ArrayをUint8Arrayに変換
+  const uint8Array = new Uint8Array(int16Array.buffer)
+  
+  // base64にエンコード
+  let binary = ''
+  for (const byte of uint8Array) {
+    binary += String.fromCharCode(byte)
+  }
+  return btoa(binary)
 }
 
 export function MicrophoneRecorder({
   onPCMData,
   bufferSize = 4096,
+  websocketUrl = 'wss://xhx738yp6f.execute-api.ap-northeast-1.amazonaws.com/dev',
 }: MicrophoneRecorderProps) {
   const [isRecording, setIsRecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [audioContext, setAudioContext] = useState<AudioContext | null>(null)
   const [sampleRate, setSampleRate] = useState<number | null>(null)
   const [pcmDataCount, setPcmDataCount] = useState(0)
+  const [websocketStatus, setWebsocketStatus] = useState<
+    'disconnected' | 'connecting' | 'connected' | 'error'
+  >('disconnected')
+  const [sentDataCount, setSentDataCount] = useState(0)
   
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
+  const websocketRef = useRef<WebSocket | null>(null)
+
+  // WebSocket接続を開始
+  const connectWebSocket = () => {
+    try {
+      setWebsocketStatus('connecting')
+      const ws = new WebSocket(websocketUrl)
+      
+      ws.onopen = () => {
+        setWebsocketStatus('connected')
+        console.log('WebSocket接続が開きました')
+      }
+      
+      ws.onerror = (wsError) => {
+        setWebsocketStatus('error')
+        console.error('WebSocketエラー:', wsError)
+        setError('WebSocket接続エラーが発生しました')
+      }
+      
+      ws.onclose = () => {
+        setWebsocketStatus('disconnected')
+        console.log('WebSocket接続が閉じられました')
+      }
+      
+      websocketRef.current = ws
+    } catch (err) {
+      setWebsocketStatus('error')
+      console.error('WebSocket接続エラー:', err)
+      setError('WebSocket接続に失敗しました')
+    }
+  }
+
+  // WebSocket接続を閉じる
+  const disconnectWebSocket = () => {
+    if (websocketRef.current) {
+      websocketRef.current.close()
+      websocketRef.current = null
+      setWebsocketStatus('disconnected')
+    }
+  }
+
+  // PCMデータをWebSocketで送信
+  const sendPCMDataToWebSocket = (pcmData: PCMData) => {
+    if (
+      websocketRef.current &&
+      websocketRef.current.readyState === WebSocket.OPEN
+    ) {
+      try {
+        const base64Data = float32ArrayToBase64(pcmData.data)
+        const message = {
+          action: 'upload',
+          data: base64Data,
+          contentType: 'audio/pcm',
+        }
+        websocketRef.current.send(JSON.stringify(message))
+        setSentDataCount((prev) => prev + 1)
+      } catch (err) {
+        console.error('PCMデータ送信エラー:', err)
+      }
+    }
+  }
 
   // AudioWorkletのセットアップ
   useEffect(() => {
     return () => {
       // クリーンアップ
       stopRecording()
+      disconnectWebSocket()
     }
   }, [])
 
@@ -55,7 +143,6 @@ export function MicrophoneRecorder({
         sampleRate: 24000,
       })
       audioContextRef.current = context
-      setAudioContext(context)
       setSampleRate(context.sampleRate)
 
       // AudioWorkletをロード
@@ -75,12 +162,18 @@ export function MicrophoneRecorder({
           }
           setPcmDataCount((prev) => prev + 1)
           onPCMData?.(pcmData)
+          
+          // WebSocketで送信
+          sendPCMDataToWebSocket(pcmData)
         }
       }
 
       // マイク入力をAudioWorkletNodeに接続
       const source = context.createMediaStreamSource(stream)
       source.connect(workletNode)
+
+      // WebSocket接続を開始
+      connectWebSocket()
 
       setIsRecording(true)
     } catch (err) {
@@ -105,11 +198,14 @@ export function MicrophoneRecorder({
     if (audioContextRef.current) {
       audioContextRef.current.close()
       audioContextRef.current = null
-      setAudioContext(null)
     }
+
+    // WebSocket接続を閉じる
+    disconnectWebSocket()
 
     setIsRecording(false)
     setPcmDataCount(0)
+    setSentDataCount(0)
   }
 
   const toggleRecording = () => {
@@ -158,6 +254,34 @@ export function MicrophoneRecorder({
             <p>サンプルレート: {sampleRate} Hz</p>
             <p>バッファサイズ: {bufferSize} サンプル</p>
             <p>受信したPCMデータ数: {pcmDataCount}</p>
+            <p>送信したPCMデータ数: {sentDataCount}</p>
+          </div>
+        )}
+
+        {isRecording && (
+          <div className="text-gray-300">
+            <p>
+              WebSocket状態:{' '}
+              <span
+                className={
+                  websocketStatus === 'connected'
+                    ? 'text-green-400'
+                    : websocketStatus === 'connecting'
+                      ? 'text-yellow-400'
+                      : websocketStatus === 'error'
+                        ? 'text-red-400'
+                        : 'text-gray-400'
+                }
+              >
+                {websocketStatus === 'disconnected'
+                  ? '切断'
+                  : websocketStatus === 'connecting'
+                    ? '接続中...'
+                    : websocketStatus === 'connected'
+                      ? '接続済み'
+                      : 'エラー'}
+              </span>
+            </p>
           </div>
         )}
 

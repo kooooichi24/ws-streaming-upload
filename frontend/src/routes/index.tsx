@@ -11,16 +11,10 @@ interface PCMData {
 }
 
 function App() {
-  const [pcmDataHistory, setPcmDataHistory] = useState<Array<PCMData>>([])
   const [latestPCMData, setLatestPCMData] = useState<PCMData | null>(null)
 
   const handlePCMData = (pcmData: PCMData) => {
     setLatestPCMData(pcmData)
-    setPcmDataHistory((prev) => {
-      const newHistory = [...prev, pcmData]
-      // 最新100件のみ保持
-      return newHistory.slice(-100)
-    })
   }
 
   // PCMデータの統計情報を計算
@@ -100,19 +94,6 @@ function App() {
             </div>
           )}
 
-          {pcmDataHistory.length > 0 && (
-            <div className="p-6 bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-xl">
-              <h3 className="text-xl font-semibold text-white mb-4">
-                データ履歴
-              </h3>
-              <p className="text-gray-400">
-                受信したPCMデータ数: {pcmDataHistory.length}
-              </p>
-              <p className="text-gray-400 text-sm mt-2">
-                （最新100件まで保持）
-              </p>
-            </div>
-          )}
         </div>
       </section>
     </div>
