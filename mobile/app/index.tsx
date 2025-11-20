@@ -178,15 +178,8 @@ export default function Index() {
       setRecordingStatus("録音中...");
       lastChunkSizeRef.current = 0;
 
-      // 定期的に音声データを送信
-      sendIntervalRef.current = setInterval(async () => {
-        await sendAudioChunk();
-      }, SEND_INTERVAL);
-
-      // 最初のチャンクもすぐに送信
-      setTimeout(() => {
-        sendAudioChunk();
-      }, 1000);
+      // レコーディング中は送信しない（終了後にまとめて送信）
+      // インターバルは削除
     } catch (error) {
       console.error("Failed to start recording:", error);
       Alert.alert("エラー", "録音の開始に失敗しました");
@@ -206,7 +199,7 @@ export default function Index() {
       isRecordingRef.current = false; // 録音状態を更新
       
       // moov atomが書き込まれるまで待つ（ファイルサイズが安定し、moov atomが含まれるまで）
-      const uri = audioRecorder.uri;
+      let uri = audioRecorder.uri;
       if (uri) {
         let previousSize = 0;
         let stableCount = 0;
@@ -263,70 +256,67 @@ export default function Index() {
         }
       }
       
-      // 残りのデータをすべて送信（複数回に分けて送信する可能性がある）
-      let attempts = 0;
-      const maxAttempts = 100;
-      let lastChunkSent = false;
+      // レコーディング終了後、moov atomが確認できたらファイル全体を送信
+      uri = audioRecorder.uri;
+      if (!uri) {
+        console.error("No recording URI");
+        return;
+      }
+
+      const file = new File(uri);
+      const fileInfo = file.info();
+      if (!fileInfo.exists) {
+        console.error("Recording file does not exist");
+        return;
+      }
+
+      // ファイル全体を読み込む
+      console.log("Reading entire file for sending...");
+      const allBytes = await file.bytes();
+      const fileSize = allBytes.length;
+      console.log(`File size: ${fileSize} bytes`);
+
+      // ファイル全体をチャンクに分割して送信
+      let offset = 0;
+      let chunkIndex = 0;
       
-      while (attempts < maxAttempts && !lastChunkSent) {
-        const uri = audioRecorder.uri;
-        if (!uri) {
-          console.log("No recording URI, stopping");
+      while (offset < fileSize) {
+        const remainingBytes = fileSize - offset;
+        const chunkSize = Math.min(remainingBytes, MAX_CHUNK_SIZE);
+        const chunkBytes = allBytes.slice(offset, offset + chunkSize);
+        
+        // Base64エンコード
+        const base64Data = bytesToBase64(chunkBytes);
+
+        // WebSocketメッセージを送信
+        const message: WebSocketMessage = {
+          action: "upload",
+          data: base64Data,
+          contentType: "audio/m4a",
+        };
+
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          console.error("WebSocket is not connected");
           break;
         }
-        
-        const file = new File(uri);
-        const fileInfo = file.info();
-        if (!fileInfo.exists) {
-          console.log("Recording file does not exist, stopping");
-          break;
-        }
-        
-        const currentSize = fileInfo.size || 0;
-        const isLastChunk = (currentSize <= lastChunkSizeRef.current + MAX_CHUNK_SIZE);
-        
-        // 最後のチャンクの場合は、moov atomが含まれているか確認
-        if (isLastChunk) {
-          const allBytes = await file.bytes();
-          const moovAtomIndex = Array.from(allBytes).findIndex((_, i) => {
-            if (i + 4 > allBytes.length) return false;
-            return (
-              allBytes[i] === 0x6D && // 'm'
-              allBytes[i + 1] === 0x6F && // 'o'
-              allBytes[i + 2] === 0x6F && // 'o'
-              allBytes[i + 3] === 0x76 // 'v'
-            );
-          });
-          
-          if (moovAtomIndex === -1) {
-            console.warn(`⚠️ moov atom not found before sending last chunk, waiting...`);
-            // moov atomが見つからない場合は、少し待ってから再試行
-            await new Promise(resolve => setTimeout(resolve, 300));
-            attempts++;
-            continue;
-          }
-        }
-        
-        if (currentSize <= lastChunkSizeRef.current) {
-          console.log("All audio data sent");
-          lastChunkSent = true;
-          break;
-        }
-        
-        // 録音停止後でも送信できるように、強制的に送信
-        await sendAudioChunk(true);
-        attempts++;
-        
+
+        wsRef.current.send(JSON.stringify(message));
+        console.log(`Sent chunk ${chunkIndex}: offset=${offset}, size=${chunkSize}, remaining=${remainingBytes - chunkSize}`);
+
+        offset += chunkSize;
+        chunkIndex++;
+
         // 少し待ってから次のチャンクを送信（WebSocketの処理を待つ）
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
+      console.log(`All chunks sent: ${chunkIndex} chunks, total ${fileSize} bytes`);
+
       setRecordingStatus("録音停止");
       lastChunkSizeRef.current = 0;
 
+
       // WebSocketを切断
-      // Wait for 5 seconds to ensure the last chunk is sent
-      await new Promise(resolve => setTimeout(resolve, 5000));
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -437,6 +427,16 @@ export default function Index() {
       // 新しいデータのみをBase64エンコード
       const base64Data = bytesToBase64(newBytes);
 
+      // デバッグ用: 送信したチャンクのデータを保存
+      sentChunksRef.current.push({
+        index: sentChunksRef.current.length,
+        bytes: new Uint8Array(newBytes), // コピーを作成
+        base64: base64Data,
+        timestamp: Date.now(),
+        offset: startOffset,
+        size: newBytes.length,
+      });
+
       // WebSocketメッセージを送信
       const messageSize = JSON.stringify({
         action: "upload",
@@ -450,6 +450,7 @@ export default function Index() {
         totalSize: allBytes.length,
         base64Size: base64Data.length,
         messageSize: messageSize,
+        chunkIndex: sentChunksRef.current.length - 1,
       });
 
       // メッセージサイズが大きすぎる場合は警告
