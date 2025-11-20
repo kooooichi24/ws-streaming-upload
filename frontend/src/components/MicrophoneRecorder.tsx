@@ -46,11 +46,14 @@ export function MicrophoneRecorder({
     'disconnected' | 'connecting' | 'connected' | 'error'
   >('disconnected')
   const [sentDataCount, setSentDataCount] = useState(0)
+  const [recordingTime, setRecordingTime] = useState(0) // 録音時間（秒）
   
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
+  const recordingStartTimeRef = useRef<number | null>(null)
+  const intervalRef = useRef<number | null>(null)
 
   // WebSocket接続を開始
   const connectWebSocket = () => {
@@ -112,12 +115,54 @@ export function MicrophoneRecorder({
     }
   }
 
+  // 録音時間をフォーマット（MM:SS形式）
+  const formatRecordingTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+
+  // 録音時間の更新（録音中のみ）
+  useEffect(() => {
+    if (isRecording) {
+      recordingStartTimeRef.current = Date.now()
+      setRecordingTime(0)
+      
+      // 100msごとに録音時間を更新
+      intervalRef.current = window.setInterval(() => {
+        if (recordingStartTimeRef.current) {
+          const elapsed = Math.floor(
+            (Date.now() - recordingStartTimeRef.current) / 1000
+          )
+          setRecordingTime(elapsed)
+        }
+      }, 100)
+    } else {
+      // 録音停止時にタイマーをクリア
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+      recordingStartTimeRef.current = null
+      setRecordingTime(0)
+    }
+
+    return () => {
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current)
+      }
+    }
+  }, [isRecording])
+
   // AudioWorkletのセットアップ
   useEffect(() => {
     return () => {
       // クリーンアップ
       stopRecording()
       disconnectWebSocket()
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current)
+      }
     }
   }, [])
 
@@ -236,9 +281,14 @@ export function MicrophoneRecorder({
           </button>
 
           {isRecording && (
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-              <span className="text-white">録音中...</span>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                <span className="text-white">録音中...</span>
+              </div>
+              <div className="text-cyan-400 font-mono text-lg font-semibold">
+                {formatRecordingTime(recordingTime)}
+              </div>
             </div>
           )}
         </div>
