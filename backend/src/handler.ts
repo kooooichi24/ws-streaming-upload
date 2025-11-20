@@ -210,6 +210,11 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
 
     try {
       const outputExt = "pcm";
+
+      // すべてのチャンクをメモリ上で結合（最初のチャンクのWebMヘッダーが有効）
+      const combinedInput = Buffer.concat(chunks);
+      const inputFile = path.join(tmpDir, `input.${outputExt}`);
+      fs.writeFileSync(inputFile, combinedInput);
       console.log(
         `Combined ${chunks.length} chunks into input file: ${combinedInput.length} bytes`
       );
@@ -222,7 +227,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
         : "/opt/bin/ffmpeg"; // Lambda Layerから
 
       // ffmpegでMP3に変換（1つの入力ファイルのみ）
-      const ffmpegCommand = `${ffmpegPath} -i "${inputFile}" -c:a libmp3lame -b:a 192k "${outputFile}" -y`;
+      const ffmpegCommand = `${ffmpegPath} -f s16le -ar 24000 -ac 1 -i "${inputFile}" -c:a libmp3lame -b:a 192k "${outputFile}" -y`;
       console.log(`Executing ffmpeg: ${ffmpegCommand}`);
 
       let ffmpegSuccess = false;
