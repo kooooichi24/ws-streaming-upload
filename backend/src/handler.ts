@@ -209,45 +209,9 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
     fs.mkdirSync(tmpDir, { recursive: true });
 
     try {
-      // ContentTypeから拡張子を取得
-      const contentType =
-        validResults[0]?.contentType || "application/octet-stream";
-      const contentTypeToExtension: Record<string, string> = {
-        "audio/mpeg": "mp3",
-        "audio/mp3": "mp3",
-        "audio/wav": "wav",
-        "audio/x-wav": "wav",
-        "audio/wave": "wav",
-        "audio/ogg": "ogg",
-        "audio/flac": "flac",
-        "audio/mp4": "m4a",
-        "audio/x-m4a": "m4a",
-        "audio/m4a": "m4a",
-        "audio/aac": "aac",
-        "audio/webm": "webm",
-      };
-
-      let outputExt = contentTypeToExtension[contentType] || "mp3";
-
-      // すべてのチャンクをメモリ上で結合（最初のチャンクのWebMヘッダーが有効）
-      const combinedInput = Buffer.concat(chunks);
-      const inputFile = path.join(tmpDir, `input.${outputExt}`);
-      fs.writeFileSync(inputFile, combinedInput);
+      const outputExt = "pcm";
       console.log(
         `Combined ${chunks.length} chunks into input file: ${combinedInput.length} bytes`
-      );
-
-      // デバッグ用: 結合されたファイルをS3に保存
-      const debugInputObjectKey = `${connectionId}/debug-input-${Date.now()}.${outputExt}`;
-      const debugInputPutCommand = new PutObjectCommand({
-        Bucket: S3_BUCKET_NAME,
-        Key: debugInputObjectKey,
-        Body: combinedInput,
-        ContentType: contentType,
-      });
-      await s3Client.send(debugInputPutCommand);
-      console.log(
-        `🔍 Debug: Combined input file saved to S3: ${debugInputObjectKey} (${combinedInput.length} bytes, moov atom: ${hasMoovAtom})`
       );
 
       const outputFile = path.join(tmpDir, `combined.mp3`);
@@ -446,16 +410,15 @@ export const defaultHandler = async (
 async function uploadToS3(
   connectionId: string,
   data: string | Buffer,
-  contentType: string
 ): Promise<string> {
   const timestamp = Date.now();
-  const objectKey = `${connectionId}/${timestamp}.tmp`;
+  const objectKey = `${connectionId}/${timestamp}.pcm`;
 
   const params: PutObjectCommandInput = {
     Bucket: S3_BUCKET_NAME,
     Key: objectKey,
     Body: typeof data === "string" ? Buffer.from(data, "base64") : data,
-    ContentType: contentType,
+    ContentType: "audio/pcm",
   };
 
   try {
@@ -495,20 +458,9 @@ export const upload = async (
       };
     }
 
-    if (!body.contentType) {
-      await sendMessageToConnection(apigwManagementApi, connectionId, {
-        type: "upload-error",
-        message: "No contentType provided",
-        error: "ContentType field is required",
-      });
-      return {
-        statusCode: 400,
-      };
-    }
-
     try {
-      const { data, contentType } = body;
-      const objectKey = await uploadToS3(connectionId, data, contentType);
+      const { data } = body;
+      const objectKey = await uploadToS3(connectionId, data);
 
       // アップロード成功をクライアントに通知
       await sendMessageToConnection(apigwManagementApi, connectionId, {
