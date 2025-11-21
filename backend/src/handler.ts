@@ -211,7 +211,7 @@ async function processAudioDataFromS3(connectionId: string): Promise<void> {
     try {
       const outputExt = "pcm";
 
-      // すべてのチャンクをメモリ上で結合（最初のチャンクのWebMヘッダーが有効）
+      // すべてのチャンクをメモリ上で結合
       const combinedInput = Buffer.concat(chunks);
       const inputFile = path.join(tmpDir, `input.${outputExt}`);
       fs.writeFileSync(inputFile, combinedInput);
