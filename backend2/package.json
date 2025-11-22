@@ -1,0 +1,45 @@
+{
+  "name": "ws-streaming-upload-backend-cdk",
+  "version": "1.0.0",
+  "description": "WebSocket streaming upload backend with CDK (ALB + Fargate)",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "cdk:deploy": "cdk deploy",
+    "cdk:destroy": "cdk destroy",
+    "cdk:diff": "cdk diff",
+    "cdk:synth": "cdk synth",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts"
+  },
+  "keywords": [
+    "websocket",
+    "cdk",
+    "aws",
+    "fargate",
+    "alb"
+  ],
+  "author": "kooooichi24",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/client-s3": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "aws-cdk-lib": "^2.150.0",
+    "constructs": "^10.4.2",
+    "source-map-support": "^0.5.21",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}
+

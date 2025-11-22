@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  websocket-server:
+    platform: linux/amd64 # Apple Silicon でも x86_64 で実行（AWS Fargate と互換性を保つ）
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - STAGE=local
+      - SERVICE=ws-streaming-upload
+      - CONNECTIONS_TABLE=ws-streaming-upload-connections-local
+      - S3_BUCKET_NAME=ws-streaming-upload-local
+      - AWS_REGION=ap-northeast-1
+      - PORT=3000
+      # AWS認証情報（ローカル開発用）
+      # 環境変数または ~/.aws/credentials から読み込まれます
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+    volumes:
+      # AWS認証情報をマウント（オプション）
+      - ~/.aws:/root/.aws:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) })",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
