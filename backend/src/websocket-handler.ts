@@ -3,7 +3,6 @@ import {
   DynamoDBDocumentClient,
   PutCommand,
   DeleteCommand,
-  ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
   S3Client,
