@@ -36,7 +36,7 @@ function float32ArrayToBase64(float32Array: Float32Array): string {
 export function MicrophoneRecorder({
   onPCMData,
   bufferSize = 4096,
-  websocketUrl = 'wss://xhx738yp6f.execute-api.ap-northeast-1.amazonaws.com/dev',
+  websocketUrl = 'ws://ws-streaming-upload-alb-dev-657914009.ap-northeast-1.elb.amazonaws.com',
 }: MicrophoneRecorderProps) {
   const [isRecording, setIsRecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
