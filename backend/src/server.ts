@@ -23,6 +23,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // UUID v4 を使用して一意性を保証
   const connectionId = randomUUID();
 
+  ws.context = {
+    tenantId: `tenant-id-${connectionId}`,
+    accountId: `account-id-${connectionId}`,
+  };
+
   console.log(`New WebSocket connection: ${connectionId}`);
 
   // 接続時の処理
@@ -42,6 +47,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       const { action } = message;
 
       console.log(`Message from ${connectionId}:`, { action, message });
+      console.log(`Context:`, ws.context);
 
       switch (action) {
         case "sendMessage":

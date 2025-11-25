@@ -17,3 +17,14 @@ export interface WebSocketMessage {
   data?: any;
   error?: string;
 }
+
+type Context = {
+  tenantId: string;
+  accountId: string;
+};
+
+declare module "ws" {
+  interface WebSocket {
+    context: Context;
+  }
+}
