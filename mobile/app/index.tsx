@@ -1,56 +1,25 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, Button, StyleSheet, Alert } from "react-native";
-import {
-  useAudioRecorder,
-  useAudioRecorderState,
-  AudioModule,
-  RecordingPresets,
-  setAudioModeAsync,
-} from "expo-audio";
-import { File } from "expo-file-system";
+import { View, Text, Button, StyleSheet, Alert, PermissionsAndroid, Platform } from "react-native";
+import LiveAudioStream from "react-native-live-audio-stream";
 
 // WebSocketエンドポイントの設定
 // ローカル環境: ws://localhost:3001
 // 本番環境: wss://your-api-gateway-endpoint/dev
-const WS_ENDPOINT = "wss://xhx738yp6f.execute-api.ap-northeast-1.amazonaws.com/dev";
+const WS_ENDPOINT = "ws://ws-streaming-upload-alb-dev-657914009.ap-northeast-1.elb.amazonaws.com";
 
-// Uint8ArrayをBase64文字列に変換するヘルパー関数
-function bytesToBase64(bytes: Uint8Array): string {
-  // React Native環境では、btoaとString.fromCharCodeを使用
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  // btoaが利用可能な場合は使用（Web/Expo環境）
-  if (typeof btoa !== 'undefined') {
-    return btoa(binary);
-  }
-  // フォールバック: 手動でBase64エンコード
-  // Base64文字セット
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let result = '';
-  let i = 0;
-  while (i < binary.length) {
-    const a = binary.charCodeAt(i++);
-    const b = i < binary.length ? binary.charCodeAt(i++) : 0;
-    const c = i < binary.length ? binary.charCodeAt(i++) : 0;
-    const bitmap = (a << 16) | (b << 8) | c;
-    result += chars.charAt((bitmap >> 18) & 63);
-    result += chars.charAt((bitmap >> 12) & 63);
-    result += i - 2 < binary.length ? chars.charAt((bitmap >> 6) & 63) : '=';
-    result += i - 1 < binary.length ? chars.charAt(bitmap & 63) : '=';
-  }
-  return result;
-}
-
-// 録音データを送信する間隔（ミリ秒）
-const SEND_INTERVAL = 1000; // 1秒ごと
-
-// チャンクサイズの制限（バイト単位）
-// API Gateway WebSocketのメッセージサイズ制限（128KB）を考慮し、
-// Base64エンコードで約33%増加するため、16KBに制限
-// Base64エンコード後は約21KBになり、より安全なマージンを確保
-const MAX_CHUNK_SIZE = 16 * 1024; // 16KB
+// オーディオストリームの設定
+// バックエンドのffmpegコマンドに合わせて設定:
+// - sampleRate: 24000 (バックエンドは -ar 24000)
+// - channels: 1 (バックエンドは -ac 1)
+// - bitsPerSample: 16 (バックエンドは -f s16le)
+const AUDIO_OPTIONS = {
+  sampleRate: 24000,
+  channels: 1,
+  bitsPerSample: 16,
+  audioSource: 6, // Androidのみ（デフォルトは6）
+  bufferSize: 4096, // バッファサイズ
+  wavFile: "", // WAVファイルへの保存は不要（空文字列）
+};
 
 interface WebSocketMessage {
   action: string;
@@ -62,20 +31,33 @@ interface WebSocketMessage {
 export default function Index() {
   const [isConnected, setIsConnected] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState<string>("");
+  const [isRecording, setIsRecording] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const sendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastChunkSizeRef = useRef<number>(0);
-  const isRecordingRef = useRef<boolean>(false); // 最新の録音状態を保持
+  const dataListenerRef = useRef<((data: string) => void) | null>(null);
 
-  // expo-audioのレコーダーを使用
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(audioRecorder);
-
-  // recorderState.isRecordingが変更されたら、refを更新
-  useEffect(() => {
-    isRecordingRef.current = recorderState.isRecording;
-    console.log("[Recording] State updated:", recorderState.isRecording);
-  }, [recorderState.isRecording]);
+  // マイクの権限をリクエスト
+  const requestMicrophonePermission = async (): Promise<boolean> => {
+    if (Platform.OS === "android") {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+          {
+            title: "マイクの権限",
+            message: "音声録音のためにマイクの権限が必要です",
+            buttonNeutral: "後で",
+            buttonNegative: "拒否",
+            buttonPositive: "許可",
+          }
+        );
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
+      } catch (err) {
+        console.error("Permission request error:", err);
+        return false;
+      }
+    }
+    // iOSの場合はInfo.plistで設定されている必要がある
+    return true;
+  };
 
   // WebSocket接続を確立
   const connectWebSocket = () => {
@@ -139,48 +121,86 @@ export default function Index() {
     }
   };
 
+  // クリーンアップ処理
+  useEffect(() => {
+    return () => {
+      // コンポーネントのアンマウント時にクリーンアップ
+      if (isRecording) {
+        LiveAudioStream.stop();
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
+
   // 録音を開始
   const startRecording = async () => {
     try {
       // マイクの権限をリクエスト
-      const status = await AudioModule.requestRecordingPermissionsAsync();
-      if (!status.granted) {
+      const hasPermission = await requestMicrophonePermission();
+      if (!hasPermission) {
         Alert.alert("権限エラー", "マイクの権限が必要です");
         return;
       }
-
-      // オーディオモードを設定
-      await setAudioModeAsync({
-        playsInSilentMode: true,
-        allowsRecording: true,
-      });
 
       // WebSocketが接続されていない場合は接続
       if (!isConnected || wsRef.current?.readyState !== WebSocket.OPEN) {
         connectWebSocket();
         // 接続を待つ
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
+          const maxWaitTime = 10000; // 最大10秒待機
+          const startTime = Date.now();
           const checkConnection = setInterval(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               clearInterval(checkConnection);
               resolve();
+            } else if (Date.now() - startTime > maxWaitTime) {
+              clearInterval(checkConnection);
+              reject(new Error("WebSocket接続タイムアウト"));
             }
           }, 100);
         });
       }
 
-      // 録音の準備
-      await audioRecorder.prepareToRecordAsync();
-      
-      // 録音を開始
-      audioRecorder.record();
-      setRecordingStatus("録音中...");
-      lastChunkSizeRef.current = 0;
+      // オーディオストリームの初期化
+      LiveAudioStream.init(AUDIO_OPTIONS);
+      console.log("[Audio] Initialized with options:", AUDIO_OPTIONS);
 
-      // レコーディング中は送信しない（終了後にまとめて送信）
-      // インターバルは削除
+      // データ受信時のリスナーを設定
+      const dataListener = (base64Data: string) => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          console.warn("[Audio] WebSocket is not connected, skipping data");
+          return;
+        }
+
+        // Base64エンコードされたPCMデータをそのまま送信
+        const message: WebSocketMessage = {
+          action: "upload",
+          data: base64Data,
+          contentType: "audio/pcm",
+        };
+
+        try {
+          wsRef.current.send(JSON.stringify(message));
+          console.log(`[Audio] Sent PCM chunk: ${base64Data.length} chars (base64)`);
+        } catch (error) {
+          console.error("[Audio] Error sending data:", error);
+        }
+      };
+
+      // リスナーを登録
+      LiveAudioStream.on("data", dataListener);
+      dataListenerRef.current = dataListener;
+
+      // オーディオストリームの開始
+      LiveAudioStream.start();
+      setIsRecording(true);
+      setRecordingStatus("録音中...");
+      console.log("[Audio] ✅ Recording started");
     } catch (error) {
-      console.error("Failed to start recording:", error);
+      console.error("[Audio] Failed to start recording:", error);
       Alert.alert("エラー", "録音の開始に失敗しました");
     }
   };
@@ -188,140 +208,22 @@ export default function Index() {
   // 録音を停止
   const stopRecording = async () => {
     try {
-      if (sendIntervalRef.current) {
-        clearInterval(sendIntervalRef.current);
-        sendIntervalRef.current = null;
-      }
-
-      // 録音を停止
-      await audioRecorder.stop();
-      isRecordingRef.current = false; // 録音状態を更新
-      
-      // moov atomが書き込まれるまで待つ（ファイルサイズが安定し、moov atomが含まれるまで）
-      let uri = audioRecorder.uri;
-      if (uri) {
-        let previousSize = 0;
-        let stableCount = 0;
-        const maxWaitTime = 10000; // 最大10秒待機
-        const startTime = Date.now();
-        let moovAtomFound = false;
-        
-        while (Date.now() - startTime < maxWaitTime && !moovAtomFound) {
-          const file = new File(uri);
-          const fileInfo = file.info();
-          if (fileInfo.exists) {
-            const currentSize = fileInfo.size || 0;
-            
-            // ファイルサイズが安定したか確認
-            if (currentSize === previousSize) {
-              stableCount++;
-              if (stableCount >= 3) {
-                // 3回連続でサイズが同じ = ファイルが完成
-                console.log(`File size stabilized at ${currentSize} bytes`);
-                
-                // moov atomが含まれているか確認
-                const allBytes = await file.bytes();
-                const moovAtomIndex = Array.from(allBytes).findIndex((_, i) => {
-                  if (i + 4 > allBytes.length) return false;
-                  return (
-                    allBytes[i] === 0x6D && // 'm'
-                    allBytes[i + 1] === 0x6F && // 'o'
-                    allBytes[i + 2] === 0x6F && // 'o'
-                    allBytes[i + 3] === 0x76 // 'v'
-                  );
-                });
-                
-                if (moovAtomIndex !== -1) {
-                  console.log(`✅ moov atom found at position ${moovAtomIndex}`);
-                  moovAtomFound = true;
-                  break;
-                } else {
-                  console.warn(`⚠️ moov atom not found yet, waiting... (stable count: ${stableCount})`);
-                  // moov atomが見つからない場合は、もう少し待つ
-                  stableCount = 0; // リセットして再チェック
-                }
-              }
-            } else {
-              stableCount = 0;
-              previousSize = currentSize;
-            }
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, 200)); // 200ms待機
-        }
-        
-        if (!moovAtomFound) {
-          console.error(`❌ moov atom not found after ${maxWaitTime}ms, but continuing...`);
-        }
-      }
-      
-      // レコーディング終了後、moov atomが確認できたらファイル全体を送信
-      uri = audioRecorder.uri;
-      if (!uri) {
-        console.error("No recording URI");
-        return;
-      }
-
-      const file = new File(uri);
-      const fileInfo = file.info();
-      if (!fileInfo.exists) {
-        console.error("Recording file does not exist");
-        return;
-      }
-
-      // ファイル全体を読み込む
-      console.log("Reading entire file for sending...");
-      const allBytes = await file.bytes();
-      const fileSize = allBytes.length;
-      console.log(`File size: ${fileSize} bytes`);
-
-      // ファイル全体をチャンクに分割して送信
-      let offset = 0;
-      let chunkIndex = 0;
-      
-      while (offset < fileSize) {
-        const remainingBytes = fileSize - offset;
-        const chunkSize = Math.min(remainingBytes, MAX_CHUNK_SIZE);
-        const chunkBytes = allBytes.slice(offset, offset + chunkSize);
-        
-        // Base64エンコード
-        const base64Data = bytesToBase64(chunkBytes);
-
-        // WebSocketメッセージを送信
-        const message: WebSocketMessage = {
-          action: "upload",
-          data: base64Data,
-          contentType: "audio/m4a",
-        };
-
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          console.error("WebSocket is not connected");
-          break;
-        }
-
-        wsRef.current.send(JSON.stringify(message));
-        console.log(`Sent chunk ${chunkIndex}: offset=${offset}, size=${chunkSize}, remaining=${remainingBytes - chunkSize}`);
-
-        offset += chunkSize;
-        chunkIndex++;
-
-        // 少し待ってから次のチャンクを送信（WebSocketの処理を待つ）
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-
-      console.log(`All chunks sent: ${chunkIndex} chunks, total ${fileSize} bytes`);
-
+      // オーディオストリームを停止（リスナーも自動的に削除される）
+      LiveAudioStream.stop();
+      dataListenerRef.current = null;
+      setIsRecording(false);
       setRecordingStatus("録音停止");
-      lastChunkSizeRef.current = 0;
+      console.log("[Audio] ✅ Recording stopped");
 
-
-      // WebSocketを切断
+      // WebSocketを切断（バックエンドで処理が完了するまで少し待つ）
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
     } catch (error) {
-      console.error("Failed to stop recording:", error);
+      console.error("[Audio] Failed to stop recording:", error);
       Alert.alert("エラー", "録音の停止に失敗しました");
     }
   };
@@ -342,10 +244,10 @@ export default function Index() {
         <Text
           style={[
             styles.statusValue,
-            recorderState.isRecording && styles.recording,
+            isRecording && styles.recording,
           ]}
         >
-          {recorderState.isRecording ? "録音中" : "停止中"}
+          {isRecording ? "録音中" : "停止中"}
         </Text>
       </View>
 
@@ -354,7 +256,7 @@ export default function Index() {
       ) : null}
 
       <View style={styles.buttonContainer}>
-        {!recorderState.isRecording ? (
+        {!isRecording ? (
           <Button
             title="録音開始"
             onPress={startRecording}

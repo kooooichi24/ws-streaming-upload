@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.kooooichi24.wsstreaminguploadmobile",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "音声録音のためにマイクへのアクセスが必要です。"
       }
     },
     "android": {
@@ -42,12 +43,6 @@
           "dark": {
             "backgroundColor": "#000000"
           }
-        }
-      ],
-      [
-        "expo-audio",
-        {
-          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone."
         }
       ]
     ],
