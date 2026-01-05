@@ -12,6 +12,22 @@ interface MicrophoneRecorderProps {
   websocketUrl?: string
 }
 
+// Server Events
+type ServerEvent =
+  | { type: 'recording.started'; recordingId: string }
+  | { type: 'recording.audio_buffer.committed'; recordingId: string }
+  | { type: 'recording.merging_started'; recordingId: string }
+  | {
+      type: 'error'
+      error: {
+        type: string
+        code: string
+        message: string
+        eventId: string | null
+        params: Record<string, unknown> | null
+      }
+    }
+
 // Float32Arrayをbase64にエンコード
 function float32ArrayToBase64(float32Array: Float32Array): string {
   // Float32ArrayをInt16Arrayに変換（16bit PCM）
@@ -21,10 +37,10 @@ function float32ArrayToBase64(float32Array: Float32Array): string {
     const sample = Math.max(-1, Math.min(1, float32Array[i]))
     int16Array[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
   }
-  
+
   // Int16ArrayをUint8Arrayに変換
   const uint8Array = new Uint8Array(int16Array.buffer)
-  
+
   // base64にエンコード
   let binary = ''
   for (const byte of uint8Array) {
@@ -36,7 +52,7 @@ function float32ArrayToBase64(float32Array: Float32Array): string {
 export function MicrophoneRecorder({
   onPCMData,
   bufferSize = 4096,
-  websocketUrl = 'ws://ws-streaming-upload-alb-dev-657914009.ap-northeast-1.elb.amazonaws.com',
+  websocketUrl = 'ws://localhost:3000/realtime',
 }: MicrophoneRecorderProps) {
   const [isRecording, setIsRecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -47,42 +63,117 @@ export function MicrophoneRecorder({
   >('disconnected')
   const [sentDataCount, setSentDataCount] = useState(0)
   const [recordingTime, setRecordingTime] = useState(0) // 録音時間（秒）
-  
+  const [connectionId, setConnectionId] = useState<string | null>(null)
+  const [recordingId, setRecordingId] = useState<string | null>(null)
+
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const recordingStartTimeRef = useRef<number | null>(null)
   const intervalRef = useRef<number | null>(null)
+  const recordingStartedPromiseRef = useRef<{
+    resolve: (recordingId: string) => void
+    reject: (error: Error) => void
+  } | null>(null)
+  const recordingIdRef = useRef<string | null>(null)
 
-  // WebSocket接続を開始
-  const connectWebSocket = () => {
-    try {
-      setWebsocketStatus('connecting')
-      const ws = new WebSocket(websocketUrl)
-      
-      ws.onopen = () => {
-        setWebsocketStatus('connected')
-        console.log('WebSocket接続が開きました')
+  // eventIdを生成（UUID v4）
+  const generateEventId = (): string => {
+    return crypto.randomUUID()
+  }
+
+  // サーバーイベントを処理
+  const handleServerEvent = (event: ServerEvent) => {
+    switch (event.type) {
+      case 'recording.started':
+        setRecordingId(event.recordingId)
+        recordingIdRef.current = event.recordingId
+        console.log('録音が開始されました:', event.recordingId)
+        // 録音開始のPromiseを解決
+        if (recordingStartedPromiseRef.current) {
+          recordingStartedPromiseRef.current.resolve(event.recordingId)
+          recordingStartedPromiseRef.current = null
+        }
+        break
+      case 'recording.audio_buffer.committed':
+        console.log(
+          'オーディオバッファがコミットされました:',
+          event.recordingId,
+        )
+        break
+      case 'recording.merging_started':
+        console.log('録音のマージが開始されました:', event.recordingId)
+        break
+      case 'error': {
+        const errorMessage = event.error.message
+        setError(errorMessage)
+        console.error('サーバーエラー:', event.error)
+        // エラーが発生した場合、録音開始のPromiseを拒否
+        if (recordingStartedPromiseRef.current) {
+          recordingStartedPromiseRef.current.reject(new Error(errorMessage))
+          recordingStartedPromiseRef.current = null
+        }
+        break
       }
-      
-      ws.onerror = (wsError) => {
-        setWebsocketStatus('error')
-        console.error('WebSocketエラー:', wsError)
-        setError('WebSocket接続エラーが発生しました')
-      }
-      
-      ws.onclose = () => {
-        setWebsocketStatus('disconnected')
-        console.log('WebSocket接続が閉じられました')
-      }
-      
-      websocketRef.current = ws
-    } catch (err) {
-      setWebsocketStatus('error')
-      console.error('WebSocket接続エラー:', err)
-      setError('WebSocket接続に失敗しました')
     }
+  }
+
+  // WebSocket接続を開始（Promiseを返す）
+  const connectWebSocket = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      try {
+        setWebsocketStatus('connecting')
+        const ws = new WebSocket(websocketUrl)
+
+        // タイムアウトを設定（10秒）
+        const timeout = setTimeout(() => {
+          reject(new Error('接続確立のタイムアウト'))
+        }, 10000)
+
+        ws.onopen = () => {
+          console.log('WebSocket接続が開きました')
+          setWebsocketStatus('connected')
+          clearTimeout(timeout)
+          resolve()
+        }
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            handleServerEvent(data as ServerEvent)
+          } catch (err) {
+            console.error('サーバーイベントの解析エラー:', err)
+          }
+        }
+
+        ws.onerror = (wsError) => {
+          setWebsocketStatus('error')
+          console.error('WebSocketエラー:', wsError)
+          setError('WebSocket接続エラーが発生しました')
+          clearTimeout(timeout)
+          reject(new Error('WebSocket接続エラーが発生しました'))
+        }
+
+        ws.onclose = () => {
+          setWebsocketStatus('disconnected')
+          setConnectionId(null)
+          setRecordingId(null)
+          recordingIdRef.current = null
+          console.log('WebSocket接続が閉じられました')
+          clearTimeout(timeout)
+        }
+
+        websocketRef.current = ws
+      } catch (err) {
+        setWebsocketStatus('error')
+        console.error('WebSocket接続エラー:', err)
+        setError('WebSocket接続に失敗しました')
+        reject(
+          err instanceof Error ? err : new Error('WebSocket接続に失敗しました'),
+        )
+      }
+    })
   }
 
   // WebSocket接続を閉じる
@@ -98,14 +189,16 @@ export function MicrophoneRecorder({
   const sendPCMDataToWebSocket = (pcmData: PCMData) => {
     if (
       websocketRef.current &&
-      websocketRef.current.readyState === WebSocket.OPEN
+      websocketRef.current.readyState === WebSocket.OPEN &&
+      recordingIdRef.current !== null
     ) {
       try {
         const base64Data = float32ArrayToBase64(pcmData.data)
+        const eventId = generateEventId()
         const message = {
-          action: 'upload',
-          data: base64Data,
-          contentType: 'audio/pcm',
+          type: 'recording.audio_buffer.commit',
+          eventId,
+          audio: base64Data,
         }
         websocketRef.current.send(JSON.stringify(message))
         setSentDataCount((prev) => prev + 1)
@@ -127,12 +220,12 @@ export function MicrophoneRecorder({
     if (isRecording) {
       recordingStartTimeRef.current = Date.now()
       setRecordingTime(0)
-      
+
       // 100msごとに録音時間を更新
       intervalRef.current = window.setInterval(() => {
         if (recordingStartTimeRef.current) {
           const elapsed = Math.floor(
-            (Date.now() - recordingStartTimeRef.current) / 1000
+            (Date.now() - recordingStartTimeRef.current) / 1000,
           )
           setRecordingTime(elapsed)
         }
@@ -169,7 +262,7 @@ export function MicrophoneRecorder({
   const startRecording = async () => {
     try {
       setError(null)
-      
+
       // マイクアクセスを要求
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -180,7 +273,7 @@ export function MicrophoneRecorder({
           autoGainControl: false,
         },
       })
-      
+
       mediaStreamRef.current = stream
 
       // AudioContextを作成
@@ -207,7 +300,7 @@ export function MicrophoneRecorder({
           }
           setPcmDataCount((prev) => prev + 1)
           onPCMData?.(pcmData)
-          
+
           // WebSocketで送信
           sendPCMDataToWebSocket(pcmData)
         }
@@ -217,8 +310,46 @@ export function MicrophoneRecorder({
       const source = context.createMediaStreamSource(stream)
       source.connect(workletNode)
 
-      // WebSocket接続を開始
-      connectWebSocket()
+      // WebSocket接続を開始（まだ接続されていない場合）
+      if (
+        !websocketRef.current ||
+        websocketRef.current.readyState !== WebSocket.OPEN
+      ) {
+        await connectWebSocket()
+      }
+
+      // recording.start イベントを送信し、recording.started を待つ
+      if (websocketRef.current?.readyState === WebSocket.OPEN) {
+        // recording.started を待つPromiseを作成
+        const recordingStartedPromise = new Promise<string>(
+          (resolve, reject) => {
+            recordingStartedPromiseRef.current = { resolve, reject }
+            // タイムアウトを設定（10秒）
+            setTimeout(() => {
+              if (recordingStartedPromiseRef.current) {
+                recordingStartedPromiseRef.current.reject(
+                  new Error('録音開始のタイムアウト'),
+                )
+                recordingStartedPromiseRef.current = null
+              }
+            }, 10000)
+          },
+        )
+
+        const eventId = generateEventId()
+        const startMessage = {
+          type: 'recording.start',
+          eventId,
+        }
+        websocketRef.current.send(JSON.stringify(startMessage))
+        console.log('録音開始イベントを送信しました:', eventId)
+
+        // recording.started イベントを受信するまで待機
+        await recordingStartedPromise
+        console.log('録音が開始されました。PCMデータの送信を開始します。')
+      } else {
+        throw new Error('WebSocket接続が確立されませんでした')
+      }
 
       setIsRecording(true)
     } catch (err) {
@@ -230,6 +361,25 @@ export function MicrophoneRecorder({
   }
 
   const stopRecording = () => {
+    // recording.complete イベントを送信
+    if (
+      websocketRef.current &&
+      websocketRef.current.readyState === WebSocket.OPEN &&
+      recordingIdRef.current !== null
+    ) {
+      try {
+        const eventId = generateEventId()
+        const completeMessage = {
+          type: 'recording.complete',
+          eventId,
+        }
+        websocketRef.current.send(JSON.stringify(completeMessage))
+        console.log('録音完了イベントを送信しました:', eventId)
+      } catch (err) {
+        console.error('録音完了イベント送信エラー:', err)
+      }
+    }
+
     if (workletNodeRef.current) {
       workletNodeRef.current.disconnect()
       workletNodeRef.current = null
@@ -251,6 +401,8 @@ export function MicrophoneRecorder({
     setIsRecording(false)
     setPcmDataCount(0)
     setSentDataCount(0)
+    setRecordingId(null)
+    recordingIdRef.current = null
   }
 
   const toggleRecording = () => {
@@ -305,6 +457,8 @@ export function MicrophoneRecorder({
             <p>バッファサイズ: {bufferSize} サンプル</p>
             <p>受信したPCMデータ数: {pcmDataCount}</p>
             <p>送信したPCMデータ数: {sentDataCount}</p>
+            {connectionId && <p>接続ID: {connectionId}</p>}
+            {recordingId && <p>録音ID: {recordingId}</p>}
           </div>
         )}
 
@@ -343,4 +497,3 @@ export function MicrophoneRecorder({
     </div>
   )
 }
-
