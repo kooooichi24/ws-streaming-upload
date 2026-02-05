@@ -1,36 +1,55 @@
 import { useState, useEffect, useRef } from "react";
+import { View, Text, Button, StyleSheet, Alert } from "react-native";
+import * as FileSystem from "expo-file-system/legacy";
 import {
-  View,
-  Text,
-  Button,
-  StyleSheet,
-  Alert,
-  PermissionsAndroid,
-  Platform,
-} from "react-native";
-import LiveAudioStream from "react-native-live-audio-stream";
+  useAudioRecorder,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  AudioQuality,
+  IOSOutputFormat,
+  type RecordingOptions,
+} from "expo-audio";
 
 // WebSocketエンドポイントの設定
 // ローカル環境: ws://localhost:3000/realtime
 // 本番環境: wss://your-api-gateway-endpoint/realtime
-const WS_ENDPOINT_BASE = "ws://192.168.1.124:3000/realtime";
+const WS_ENDPOINT_BASE = "ws://192.168.1.133:3000/realtime";
 
 // Cookieの設定
 const SESSION_COOKIE = "ACCOUNTS-SESSION-ID-LOCAL=";
 
-// オーディオストリームの設定
-// バックエンドのffmpegコマンドに合わせて設定:
-// - sampleRate: 16000 (バックエンドは -ar 16000)
-// - channels: 1 (バックエンドは -ac 1)
-// - bitsPerSample: 16 (バックエンドは -f s16le)
-const AUDIO_OPTIONS = {
+// AAC録音オプション（できるだけストリーミングしやすい形式を狙う）
+//
+// NOTE:
+// - Androidは `outputFormat: "aac_adts"` でADTSを狙える（ストリーム向き）
+// - iOSは `AVAudioRecorder` の挙動が端末/OS依存。`.aac` + `MPEG4AAC` でADTSになることもあるが、
+//   `m4a` コンテナで書かれる場合は「録音中の増分送信」が成立しないことがある（停止後送信にフォールバック）
+const AAC_RECORDING_OPTIONS: RecordingOptions = {
+  extension: ".aac",
   sampleRate: 16000,
-  channels: 1,
-  bitsPerSample: 16,
-  audioSource: 6, // Androidのみ（デフォルトは6）
-  bufferSize: 4096, // バッファサイズ
-  wavFile: "", // WAVファイルへの保存は不要（空文字列）
+  numberOfChannels: 1,
+  bitRate: 32000,
+  android: {
+    outputFormat: "aac_adts",
+    audioEncoder: "aac",
+    sampleRate: 16000,
+    audioSource: "voice_recognition",
+  },
+  ios: {
+    outputFormat: IOSOutputFormat.MPEG4AAC,
+    audioQuality: AudioQuality.MEDIUM,
+    sampleRate: 16000,
+    extension: ".aac",
+  },
+  web: {
+    mimeType: "audio/aac",
+    bitsPerSecond: 32000,
+  },
 };
+
+const AAC_POLL_INTERVAL_MS = 250;
+const AAC_MAX_READ_BYTES_PER_CHUNK = 64 * 1024;
+const AAC_MAX_CHUNKS_PER_TICK = 8;
 
 // サーバーイベントの型定義
 type ServerEvent =
@@ -70,12 +89,27 @@ export default function Index() {
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [sentDataCount, setSentDataCount] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
-  const dataListenerRef = useRef<((data: string) => void) | null>(null);
   const recordingIdRef = useRef<string | null>(null);
   const recordingStartedPromiseRef = useRef<{
     resolve: (recordingId: string) => void;
     reject: (error: Error) => void;
   } | null>(null);
+
+  const audioRecorder = useAudioRecorder(AAC_RECORDING_OPTIONS, (status) => {
+    if (status?.hasError) {
+      const message = status.error ?? "録音エラーが発生しました";
+      console.error("[Audio] Recorder error:", status);
+      setError(message);
+      setRecordingStatus(`録音エラー: ${message}`);
+    }
+  });
+
+  // AACファイル増分送信用
+  const aacFileUriRef = useRef<string | null>(null);
+  const aacReadPositionRef = useRef<number>(0);
+  const aacPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const aacSendInFlightRef = useRef(false);
+  const isRecordingRef = useRef(false);
 
   // サーバーイベントを処理
   const handleServerEvent = (event: ServerEvent) => {
@@ -115,28 +149,97 @@ export default function Index() {
     }
   };
 
-  // マイクの権限をリクエスト
-  const requestMicrophonePermission = async (): Promise<boolean> => {
-    if (Platform.OS === "android") {
-      try {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          {
-            title: "マイクの権限",
-            message: "音声録音のためにマイクの権限が必要です",
-            buttonNeutral: "後で",
-            buttonNegative: "拒否",
-            buttonPositive: "許可",
-          }
-        );
-        return granted === PermissionsAndroid.RESULTS.GRANTED;
-      } catch (err) {
-        console.error("Permission request error:", err);
-        return false;
-      }
+  const stopAacPolling = () => {
+    if (aacPollTimerRef.current) {
+      clearInterval(aacPollTimerRef.current);
+      aacPollTimerRef.current = null;
     }
-    // iOSの場合はInfo.plistで設定されている必要がある
-    return true;
+  };
+
+  const resolveAacFileUri = (): string | null => {
+    if (aacFileUriRef.current) return aacFileUriRef.current;
+    const uri = audioRecorder.uri ?? audioRecorder.getStatus().url ?? null;
+    if (uri) aacFileUriRef.current = uri;
+    return uri;
+  };
+
+  const guessContainerFromUri = (uri: string): "adts" | "m4a" | "unknown" => {
+    const lower = uri.toLowerCase();
+    if (lower.includes(".m4a")) return "m4a";
+    if (lower.includes(".aac")) return "adts";
+    return "unknown";
+  };
+
+  const sendPendingAacData = async (
+    maxChunks: number = AAC_MAX_CHUNKS_PER_TICK
+  ): Promise<{ bytesSent: number }> => {
+    if (aacSendInFlightRef.current) return { bytesSent: 0 };
+    aacSendInFlightRef.current = true;
+
+    try {
+      let bytesSent = 0;
+
+      for (let i = 0; i < maxChunks; i++) {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) break;
+        if (recordingIdRef.current === null) break;
+
+        const fileUri = resolveAacFileUri();
+        if (!fileUri) break;
+
+        const info = await FileSystem.getInfoAsync(fileUri);
+        if (!info.exists || typeof info.size !== "number") break;
+
+        const available = info.size - aacReadPositionRef.current;
+        if (available <= 0) break;
+
+        const byteOffset = aacReadPositionRef.current;
+        const byteLength = Math.min(available, AAC_MAX_READ_BYTES_PER_CHUNK);
+
+        const base64Chunk = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: byteOffset,
+          length: byteLength,
+        });
+
+        if (!base64Chunk) {
+          aacReadPositionRef.current += byteLength;
+          continue;
+        }
+
+        const container = guessContainerFromUri(fileUri);
+        const eventId = generateEventId();
+        const message = {
+          type: "recording.audio_buffer.commit.v2",
+          eventId,
+          audio: base64Chunk,
+        };
+
+        ws.send(JSON.stringify(message));
+
+        aacReadPositionRef.current += byteLength;
+        bytesSent += byteLength;
+        setSentDataCount((prev) => prev + 1);
+
+        console.log(
+          `[Audio] Sent AAC chunk: ${byteLength} bytes (offset=${byteOffset}, container=${container})`
+        );
+      }
+
+      return { bytesSent };
+    } catch (err) {
+      console.warn("[Audio] Failed to send pending AAC data:", err);
+      return { bytesSent: 0 };
+    } finally {
+      aacSendInFlightRef.current = false;
+    }
+  };
+
+  const startAacPolling = () => {
+    if (aacPollTimerRef.current) return;
+    aacPollTimerRef.current = setInterval(() => {
+      void sendPendingAacData();
+    }, AAC_POLL_INTERVAL_MS);
   };
 
   // WebSocket接続を確立（Promiseを返す）
@@ -169,12 +272,14 @@ export default function Index() {
         console.log(`[WS] Cookie: ${cookieHeader}`);
         console.log(`[WS] Full URL: ${wsUrl.substring(0, 100)}...`); // URLが長い場合は省略
 
-        // 標準のWebSocket接続を使用（React Nativeではheadersオプションが使えない）
-        const ws = new WebSocket(wsUrl, null, {
+        // React NativeのWebSocketは環境によって options(headers) をサポートするが、型定義(DOM)とは不一致
+        // ここでは any キャストで対応（Cookie不要なら第3引数を削除してOK）
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ws = new (WebSocket as any)(wsUrl, null, {
           headers: {
             Cookie: cookieHeader,
           },
-        });
+        }) as WebSocket;
 
         // 接続が確立されたかどうかを追跡
         let connectionEstablished = false;
@@ -288,10 +393,21 @@ export default function Index() {
 
   // クリーンアップ処理
   useEffect(() => {
+    // 録音モードを事前に設定（iOSで必要になるケースがある）
+    setAudioModeAsync({
+      allowsRecording: true,
+      playsInSilentMode: true,
+    }).catch((err) => {
+      console.warn("[Audio] Failed to set audio mode:", err);
+    });
+
     return () => {
       // コンポーネントのアンマウント時にクリーンアップ
-      if (isRecording) {
-        LiveAudioStream.stop();
+      stopAacPolling();
+      if (isRecordingRef.current) {
+        audioRecorder.stop().catch((err) => {
+          console.warn("[Audio] Failed to stop recorder on unmount:", err);
+        });
       }
       if (wsRef.current) {
         wsRef.current.close();
@@ -299,21 +415,28 @@ export default function Index() {
       }
       recordingIdRef.current = null;
       recordingStartedPromiseRef.current = null;
+      aacFileUriRef.current = null;
+      aacReadPositionRef.current = 0;
+      isRecordingRef.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [audioRecorder]);
 
   // 録音を開始
   const startRecording = async () => {
     try {
       setError(null);
 
-      // マイクの権限をリクエスト
-      const hasPermission = await requestMicrophonePermission();
-      if (!hasPermission) {
+      // マイクの権限をリクエスト（Expo Audio）
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
         Alert.alert("権限エラー", "マイクの権限が必要です");
         return;
       }
+
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+      });
 
       // WebSocketが接続されていない場合は接続
       if (!isConnected || wsRef.current?.readyState !== WebSocket.OPEN) {
@@ -342,62 +465,34 @@ export default function Index() {
         const startMessage = {
           type: "recording.start",
           eventId,
+          audioFormat: "aac",
         };
         wsRef.current.send(JSON.stringify(startMessage));
         console.log("[WS] 録音開始イベントを送信しました:", eventId);
 
         // recording.started イベントを受信するまで待機
         await recordingStartedPromise;
-        console.log("[WS] 録音が開始されました。PCMデータの送信を開始します。");
+        console.log("[WS] 録音が開始されました。AACデータの送信を開始します。");
       } else {
         throw new Error("WebSocket接続が確立されませんでした");
       }
 
-      // オーディオストリームの初期化
-      LiveAudioStream.init(AUDIO_OPTIONS);
-      console.log("[Audio] Initialized with options:", AUDIO_OPTIONS);
+      // AAC録音を開始（録音はファイルに書き込まれ、追記分をポーリングで送信する）
+      aacFileUriRef.current = null;
+      aacReadPositionRef.current = 0;
+      setSentDataCount(0);
 
-      // データ受信時のリスナーを設定
-      const dataListener = (base64Data: string) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          console.warn("[Audio] WebSocket is not connected, skipping data");
-          return;
-        }
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
 
-        // recordingIdが設定されている場合のみ送信
-        if (recordingIdRef.current === null) {
-          console.warn("[Audio] Recording ID is not set, skipping data");
-          return;
-        }
+      // 端末によってはすぐにURIが出ないことがあるので、ポーリングも併用する
+      void resolveAacFileUri();
+      startAacPolling();
 
-        // recording.audio_buffer.commit イベントとして送信
-        const eventId = generateEventId();
-        const message = {
-          type: "recording.audio_buffer.commit",
-          eventId,
-          audio: base64Data,
-        };
-
-        try {
-          wsRef.current.send(JSON.stringify(message));
-          setSentDataCount((prev) => prev + 1);
-          console.log(
-            `[Audio] Sent PCM chunk: ${base64Data.length} chars (base64)`
-          );
-        } catch (error) {
-          console.error("[Audio] Error sending data:", error);
-        }
-      };
-
-      // リスナーを登録
-      LiveAudioStream.on("data", dataListener);
-      dataListenerRef.current = dataListener;
-
-      // オーディオストリームの開始
-      LiveAudioStream.start();
       setIsRecording(true);
       setRecordingStatus("録音中...");
-      console.log("[Audio] ✅ Recording started");
+      isRecordingRef.current = true;
+      console.log("[Audio] ✅ Recording started (AAC)");
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "録音の開始に失敗しました";
@@ -410,7 +505,23 @@ export default function Index() {
   // 録音を停止
   const stopRecording = async () => {
     try {
-      // recording.complete イベントを送信
+      stopAacPolling();
+
+      // 録音停止（ファイル確定）
+      try {
+        await audioRecorder.stop();
+      } catch (err) {
+        console.warn("[Audio] Recorder stop warning:", err);
+      }
+
+      // 残りを可能な限り送信（録音停止後にサイズが増える場合があるため複数回トライ）
+      for (let i = 0; i < 8; i++) {
+        const { bytesSent } = await sendPendingAacData(32);
+        if (bytesSent === 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      // recording.complete を最後に送信
       if (
         wsRef.current &&
         wsRef.current.readyState === WebSocket.OPEN &&
@@ -429,14 +540,14 @@ export default function Index() {
         }
       }
 
-      // オーディオストリームを停止（リスナーも自動的に削除される）
-      LiveAudioStream.stop();
-      dataListenerRef.current = null;
       setIsRecording(false);
+      isRecordingRef.current = false;
       setRecordingStatus("録音停止");
       setSentDataCount(0);
       setRecordingId(null);
       recordingIdRef.current = null;
+      aacFileUriRef.current = null;
+      aacReadPositionRef.current = 0;
       console.log("[Audio] ✅ Recording stopped");
 
       // WebSocketを切断（バックエンドで処理が完了するまで少し待つ）
